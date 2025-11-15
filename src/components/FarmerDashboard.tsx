@@ -832,7 +832,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
 
   const checkBackendStatus = async () => {
     try {
-      const response = await fetch('https://f2c-backend.onrender.com/api/products', {
+      const response = await fetch('http://localhost:5000/api/products', {
         method: 'GET',
         headers: { 'Accept': 'application/json' }
       });
@@ -960,7 +960,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
   const handleUpdateQuantity = async () => {
     if (!editingProduct) return;
     try {
-      const response = await fetch(`https://f2c-backend.onrender.com/api/products/${editingProduct.id}/quantity`, {
+      const response = await fetch(`http://localhost:5000/api/products/${editingProduct.id}/quantity`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

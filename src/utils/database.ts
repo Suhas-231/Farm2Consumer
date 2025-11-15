@@ -1,5 +1,5 @@
 // MySQL database integration using API calls
-const API_BASE_URL = 'https://f2c-backend.onrender.com';
+const API_BASE_URL = 'http://localhost:5000/api';
 
 interface User {
   id: string;
