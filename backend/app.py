@@ -477,7 +477,7 @@ def forgot_reset_password():
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
 
-        user.password = generate_password_hash(new_password)
+        user.password = generate_password_hash(new_password) # type: ignore
         db.session.commit()
         return jsonify({'success': True, 'message': 'Password updated'})
     except Exception as e:
@@ -1777,4 +1777,4 @@ if __name__ == '__main__':
     cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
     cleanup_thread.start()
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True)

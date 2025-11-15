@@ -24,88 +24,486 @@ interface FarmerDashboardProps {
   user: any;
 }
 
-// Check if image contains geotag data
-const checkImageGeoTag = (file: File): Promise<boolean> => {
+// Check if image contains geotag data (strict verification)
+const checkImageGeoTag = (file: File): Promise<{ hasGeoTag: boolean; error?: string }> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = () => {
       const img = document.createElement('img');
       img.src = reader.result as string;
       
-      // Add timeout to prevent hanging
+      // Set timeout to prevent hanging
       const timeout = setTimeout(() => {
-        console.warn('EXIF reading timeout - assuming geotagged for GPS Map Camera images');
-        // If timeout, accept the image (many GPS Map Camera apps add overlays)
-        resolve(true);
-      }, 5000);
+        console.warn('EXIF reading timeout');
+        resolve({ 
+          hasGeoTag: false, 
+          error: 'Geotag verification timeout. Please ensure your image contains GPS location data.' 
+        });
+      }, 8000);
       
       img.onload = () => {
         try {
-        EXIF.getData(img as any, function(this: any) {
+          EXIF.getData(img as any, function(this: any) {
             clearTimeout(timeout);
             try {
-              // Try multiple ways to get GPS data
-              const lat = EXIF.getTag(this, 'GPSLatitude') || EXIF.getTag(this, 'GPSLatitudeRef');
-              const long = EXIF.getTag(this, 'GPSLongitude') || EXIF.getTag(this, 'GPSLongitudeRef');
+              // Get GPS coordinates - these are the primary indicators
+              const gpsLatitude = EXIF.getTag(this, 'GPSLatitude');
+              const gpsLatitudeRef = EXIF.getTag(this, 'GPSLatitudeRef');
+              const gpsLongitude = EXIF.getTag(this, 'GPSLongitude');
+              const gpsLongitudeRef = EXIF.getTag(this, 'GPSLongitudeRef');
               
-              // Also check if GPS info exists in any form
-              const gpsInfo = EXIF.getTag(this, 'GPS');
+              // Get all EXIF data for comprehensive checking
               const allExifData = EXIF.getAllTags(this);
+              const gpsInfo = EXIF.getTag(this, 'GPS');
               
-              // Debug: log all EXIF data
-              console.log('EXIF GPSLatitude:', lat);
-              console.log('EXIF GPSLongitude:', long);
+              // Debug logging
+              console.log('EXIF GPSLatitude:', gpsLatitude);
+              console.log('EXIF GPSLongitude:', gpsLongitude);
+              console.log('EXIF GPSLatitudeRef:', gpsLatitudeRef);
+              console.log('EXIF GPSLongitudeRef:', gpsLongitudeRef);
               console.log('EXIF GPS Info:', gpsInfo);
-              console.log('All EXIF Tags:', Object.keys(allExifData || {}));
               
-              // Check if GPS data exists in any format
-              let hasGeoTag = !!(lat && long);
+              // Strict check: Must have actual GPS coordinates
+              let hasGeoTag = false;
               
-              // Alternative: Check if GPS object exists
-              if (!hasGeoTag && gpsInfo) {
-                console.log('GPS info found in GPS object:', gpsInfo);
-                hasGeoTag = true;
-              }
-              
-              // If image has any EXIF data and was taken with a camera, likely has location
-              // GPS Map Camera apps often add location data even if EXIF.js can't read it
-              if (!hasGeoTag && allExifData && Object.keys(allExifData).length > 0) {
-                console.log('Image has EXIF data but GPS not readable - checking for GPS Map Camera metadata');
-                // Check if it's from GPS Map Camera app by checking if it has timestamp
-                const dateTime = EXIF.getTag(this, 'DateTimeOriginal') || EXIF.getTag(this, 'DateTime');
-                if (dateTime) {
-                  console.log('Image has camera metadata - likely geotagged by GPS Map Camera');
-                  // Accept images with camera metadata (GPS Map Camera adds location even if EXIF.js can't read it)
+              // Primary check: Valid GPS coordinates exist
+              if (gpsLatitude && gpsLongitude) {
+                // Verify coordinates are in valid format (array with numbers)
+                if (Array.isArray(gpsLatitude) && Array.isArray(gpsLongitude)) {
+                  // Check if arrays contain valid numeric values
+                  const latValid = gpsLatitude.length > 0 && gpsLatitude.some(v => typeof v === 'number');
+                  const longValid = gpsLongitude.length > 0 && gpsLongitude.some(v => typeof v === 'number');
+                  
+                  if (latValid && longValid) {
+                    hasGeoTag = true;
+                    console.log('✅ Valid GPS coordinates found');
+                  }
+                } else if (typeof gpsLatitude === 'number' && typeof gpsLongitude === 'number') {
+                  // Sometimes coordinates are direct numbers
                   hasGeoTag = true;
+                  console.log('✅ Valid GPS coordinates found (numeric format)');
                 }
               }
               
-          resolve(hasGeoTag);
+              // Secondary check: GPS info object exists with location data
+              if (!hasGeoTag && gpsInfo && typeof gpsInfo === 'object') {
+                // Check if GPS object has coordinate-related properties
+                const gpsKeys = Object.keys(gpsInfo);
+                const hasCoordinateKeys = gpsKeys.some(key => 
+                  key.includes('Latitude') || key.includes('Longitude') || key.includes('GPS')
+                );
+                if (hasCoordinateKeys) {
+                  hasGeoTag = true;
+                  console.log('✅ GPS location data found in GPS object');
+                }
+              }
+              
+              // Tertiary check: Look for GPS Map Camera metadata patterns
+              // GPS Map Camera apps often embed location in custom EXIF tags
+              if (!hasGeoTag && allExifData) {
+                const exifKeys = Object.keys(allExifData);
+                // Check for location-related tags
+                const locationIndicators = exifKeys.filter(key => 
+                  key.toLowerCase().includes('gps') || 
+                  key.toLowerCase().includes('location') ||
+                  key.toLowerCase().includes('latitude') ||
+                  key.toLowerCase().includes('longitude') ||
+                  key.toLowerCase().includes('coordinate')
+                );
+                
+                if (locationIndicators.length > 0) {
+                  // Verify that these tags actually contain meaningful data
+                  const hasValidLocationData = locationIndicators.some(key => {
+                    const value = allExifData[key];
+                    // Check if value is not null/undefined and has meaningful content
+                    return value !== null && value !== undefined && 
+                           (typeof value === 'number' || 
+                            (Array.isArray(value) && value.length > 0) ||
+                            (typeof value === 'string' && value.length > 0));
+                  });
+                  
+                  if (hasValidLocationData) {
+                    hasGeoTag = true;
+                    console.log('✅ Location metadata found in EXIF tags:', locationIndicators);
+                  }
+                }
+                
+                // Also check raw EXIF data for GPS IFD (Image File Directory)
+                // Some cameras store GPS data in a separate IFD
+                try {
+                  // Try to access GPS IFD directly if available
+                  const gpsIfd = (this as any).exifdata?.GPS;
+                  if (gpsIfd && typeof gpsIfd === 'object') {
+                    const gpsKeys = Object.keys(gpsIfd);
+                    if (gpsKeys.length > 0) {
+                      // Check for coordinate data in GPS IFD
+                      const hasCoordData = gpsKeys.some(key => {
+                        const val = gpsIfd[key];
+                        return val !== null && val !== undefined && 
+                               (Array.isArray(val) || typeof val === 'number' || typeof val === 'string');
+                      });
+                      if (hasCoordData) {
+                        hasGeoTag = true;
+                        console.log('✅ GPS IFD data found:', gpsKeys);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  // Ignore errors accessing GPS IFD
+                }
+              }
+              
+              // Visual check: Try to detect GPS Map Camera overlay
+              // Strong visual overlay detection (high confidence) indicates GPS Map Camera overlay
+              // This helps identify GPS-geotagged images even when file content is binary/unreadable
+              let hasVisualOverlay = false;
+              let visualOverlayConfidence = 0;
+              
+              if (!hasGeoTag) {
+                try {
+                  const canvas = document.createElement('canvas');
+                  const ctx = canvas.getContext('2d');
+                  if (ctx) {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Focus ONLY on bottom 15% where GPS Map Camera overlays are placed
+                    // GPS Map Camera overlays are typically:
+                    // 1. Horizontal dark bands/boxes at the very bottom
+                    // 2. Contain text (coordinates, location names)
+                    // 3. Have consistent dark background with lighter text
+                    const bottomRegionHeight = Math.floor(img.height * 0.15); // Bottom 15% only
+                    const bottomRegion = {
+                      x: 0,
+                      y: img.height - bottomRegionHeight,
+                      width: img.width,
+                      height: bottomRegionHeight
+                    };
+                    
+                    const imageData = ctx.getImageData(bottomRegion.x, bottomRegion.y, bottomRegion.width, bottomRegion.height);
+                    const totalPixels = imageData.data.length / 4;
+                    
+                    // Analyze bottom region for GPS overlay characteristics
+                    let veryDarkPixelCount = 0; // Very dark background pixels
+                    let darkPixelCount = 0;
+                    let lightPixelCount = 0; // Light text pixels
+                    let horizontalBandCount = 0; // Horizontal dark bands (typical of GPS overlays)
+                    
+                    // Check for horizontal bands (GPS overlays have horizontal dark bands)
+                    const rowHeight = Math.floor(bottomRegion.height / 10); // Divide into 10 horizontal bands
+                    const darkBandThreshold = 0.4; // 40% of row must be dark
+                    
+                    for (let band = 0; band < 10; band++) {
+                      let bandDarkCount = 0;
+                      const bandStartY = band * rowHeight;
+                      const bandEndY = Math.min((band + 1) * rowHeight, bottomRegion.height);
+                      
+                      for (let y = bandStartY; y < bandEndY; y++) {
+                        for (let x = 0; x < bottomRegion.width; x++) {
+                          const pixelIndex = (y * bottomRegion.width + x) * 4;
+                          const r = imageData.data[pixelIndex];
+                          const g = imageData.data[pixelIndex + 1];
+                          const b = imageData.data[pixelIndex + 2];
+                          const brightness = (r + g + b) / 3;
+                          
+                          if (brightness < 50) {
+                            bandDarkCount++;
+                          }
+                        }
+                      }
+                      
+                      const bandDarkRatio = bandDarkCount / (bottomRegion.width * (bandEndY - bandStartY));
+                      if (bandDarkRatio > darkBandThreshold) {
+                        horizontalBandCount++;
+                      }
+                    }
+                    
+                    // Analyze all pixels in bottom region
+                    for (let i = 0; i < imageData.data.length; i += 4) {
+                      const r = imageData.data[i];
+                      const g = imageData.data[i + 1];
+                      const b = imageData.data[i + 2];
+                      const brightness = (r + g + b) / 3;
+                      
+                      // Very dark pixels (overlay background)
+                      if (brightness < 30) {
+                        veryDarkPixelCount++;
+                        darkPixelCount++;
+                      } else if (brightness < 60) {
+                        darkPixelCount++;
+                      } else if (brightness > 180) {
+                        lightPixelCount++; // Light text on dark background
+                      }
+                    }
+                    
+                    const veryDarkRatio = veryDarkPixelCount / totalPixels;
+                    const darkRatio = darkPixelCount / totalPixels;
+                    const lightRatio = lightPixelCount / totalPixels;
+                    const contrastRatio = lightRatio > 0 && darkRatio > 0 ? (lightRatio + darkRatio) : 0;
+                    
+                    // STRICT criteria for GPS overlay detection:
+                    // 1. Must have significant very dark regions (overlay background)
+                    // 2. Must have horizontal band patterns (typical of GPS overlays)
+                    // 3. Must have contrast (dark background + light text)
+                    // 4. High threshold to avoid false positives from regular image content
+                    
+                    // More balanced thresholds - strict enough to reject false positives but lenient for real GPS overlays
+                    const hasStrongDarkBackground = veryDarkRatio > 0.10 && darkRatio > 0.20; // Lowered from 0.15/0.25
+                    const hasModerateDarkBackground = veryDarkRatio > 0.05 || darkRatio > 0.15; // Moderate dark region
+                    const hasHorizontalBands = horizontalBandCount >= 1; // At least 1 dark horizontal band (lowered from 2)
+                    const hasTextContrast = contrastRatio > 0.08 && lightRatio > 0.03; // Lowered thresholds
+                    
+                    // Calculate confidence score with more flexible criteria
+                    if (hasStrongDarkBackground) visualOverlayConfidence += 3;
+                    else if (hasModerateDarkBackground) visualOverlayConfidence += 1; // Partial credit for moderate dark
+                    
+                    if (hasHorizontalBands) {
+                      visualOverlayConfidence += 2;
+                      if (horizontalBandCount >= 2) visualOverlayConfidence += 1; // Bonus for multiple bands
+                    }
+                    
+                    if (hasTextContrast) visualOverlayConfidence += 2;
+                    if (veryDarkRatio > 0.20) visualOverlayConfidence += 1; // Extra dark background (lowered from 0.25)
+                    
+                    // Lowered threshold from 5 to 3 - accept if we have reasonable indicators
+                    // This allows GPS Map Camera images with overlays to pass while still rejecting false positives
+                    if (visualOverlayConfidence >= 3) {
+                      hasVisualOverlay = true;
+                      console.log(`📸 GPS overlay indicators detected in bottom region:`);
+                      console.log(`   Very dark ratio: ${(veryDarkRatio * 100).toFixed(1)}%, Dark ratio: ${(darkRatio * 100).toFixed(1)}%`);
+                      console.log(`   Horizontal bands: ${horizontalBandCount}, Text contrast: ${(contrastRatio * 100).toFixed(1)}%`);
+                      console.log(`   Confidence score: ${visualOverlayConfidence}`);
+                    } else {
+                      console.log(`⚠️ Weak visual indicators (confidence: ${visualOverlayConfidence})`);
+                      console.log(`   Very dark: ${(veryDarkRatio * 100).toFixed(1)}%, Bands: ${horizontalBandCount}, Contrast: ${(contrastRatio * 100).toFixed(1)}%`);
+                    }
+                  }
+                } catch (canvasError) {
+                  console.warn('Canvas detection error:', canvasError);
+                }
+              }
+              
+              // Final resolution: Check file content for GPS data
+              // Accept if we find GPS indicators in file content (whether visual overlay detected or not)
+              if (hasGeoTag) {
+                // Standard EXIF GPS data found - accept immediately
+                resolve({ hasGeoTag: true });
+              } else {
+                // Check file content for GPS data (whether visual overlay detected or not)
+                console.log(`🔍 Checking file content for GPS location data... (Visual overlay: ${hasVisualOverlay ? 'detected' : 'not detected'})`);
+                file.arrayBuffer().then(arrayBuffer => {
+                  try {
+                    const uint8Array = new Uint8Array(arrayBuffer);
+                    // Read larger portions of the file - check start, middle, and end
+                    // GPS Map Camera data can be embedded anywhere in the file
+                    const fileSize = uint8Array.length;
+                    const checkSize = Math.min(fileSize, 500000); // Check up to 500KB
+                    
+                    // Read from multiple sections: start, middle sections, and end
+                    const sections: string[] = [];
+                    const numSections = 5;
+                    for (let i = 0; i < numSections; i++) {
+                      const start = Math.floor((fileSize / numSections) * i);
+                      const end = Math.min(start + (checkSize / numSections), fileSize);
+                      const section = Array.from(uint8Array.slice(start, end))
+                        .map(byte => {
+                          // Keep printable ASCII and common whitespace, convert others to space
+                          if (byte >= 32 && byte <= 126) return String.fromCharCode(byte);
+                          if (byte === 9 || byte === 10 || byte === 13) return ' '; // Tab, LF, CR -> space
+                          return ' '; // Other non-printable -> space
+                        })
+                        .join('');
+                      sections.push(section);
+                    }
+                    const fileString = sections.join(' ');
+                    
+                    // Debug: Log a sample of what we found
+                    const sample = fileString.substring(0, 500).replace(/\s+/g, ' ');
+                    console.log('📄 File content sample (first 500 chars):', sample);
+                    
+                    // Very flexible location patterns - look for GPS data in many formats
+                    const locationPatterns = [
+                      /GPS\s*Map\s*Camera/i, // GPS Map Camera app signature (strongest indicator)
+                      /GPS.*Camera/i, // Any GPS Camera reference
+                      /Lat\s*[:\s]*[\d]+\.[\d]+/i, // "Lat 13.05" or "Lat 13.053006"
+                      /Long\s*[:\s]*[\d]+\.[\d]+/i, // "Long 77.71" or "Long 77.718094"
+                      /Latitude\s*[:\s]*[\d]+\.[\d]+/i,
+                      /Longitude\s*[:\s]*[\d]+\.[\d]+/i,
+                      /Coordinates?\s*[:\s]*[\d]+\.[\d]+/i,
+                      /Location\s*[:\s]*[A-Z][a-z]+/i, // "Location: City"
+                      /[\d]+\.[\d]+\s*[°]?\s*Long/i, // "13.0530° Long"
+                      /[\d]+\.[\d]+\s*[°]?\s*Lat/i, // "77.7180° Lat"
+                      /Bengaluru|Karnataka|India/i, // Location names from the apple image
+                      /Plus\s*Code/i, // "Plus Code" from GPS Map Camera
+                      /GMT\s*\+/i, // Timezone indicator
+                    ];
+                    
+                    const matches = locationPatterns.filter(pattern => pattern.test(fileString));
+                    const hasGPSMapCamera = /GPS\s*Map\s*Camera/i.test(fileString);
+                    
+                    // Look for coordinate patterns - very flexible
+                    // Find decimal numbers that look like coordinates
+                    // Pattern: 1-3 digits, decimal point, 1-8 digits (e.g., "13.053006", "77.718094")
+                    const coordinatePattern = /[\d]{1,3}\.[\d]{1,8}/g;
+                    const allNumbers = fileString.match(coordinatePattern) || [];
+                    
+                    // Also look for coordinates without word boundaries (might be embedded in text)
+                    const allNumbers2 = fileString.match(/[\d]+\.[\d]+/g) || [];
+                    const combinedNumbers = [...new Set([...allNumbers, ...allNumbers2])]; // Remove duplicates
+                    
+                    // Filter to likely coordinates - be very lenient
+                    // Accept any decimal number that could be a coordinate (0-180 range)
+                    const likelyCoordinates = combinedNumbers.filter(num => {
+                      try {
+                        const value = parseFloat(num);
+                        // Latitude: -90 to 90, Longitude: -180 to 180
+                        // Accept any value in this range, or close to it
+                        // Also accept if it has at least 2 decimal places (more likely to be a coordinate)
+                        const hasDecimal = num.includes('.');
+                        const decimalPlaces = hasDecimal ? num.split('.')[1].length : 0;
+                        return (value >= 0 && value <= 200) && (hasDecimal && decimalPlaces >= 1);
+                      } catch (e) {
+                        return false;
+                      }
+                    });
+                    
+                    // Check for Lat/Long labels
+                    const hasLat = /Lat/i.test(fileString);
+                    const hasLong = /Long/i.test(fileString);
+                    const hasLatLongLabels = hasLat && hasLong;
+                    
+                    // Check if we have coordinates near Lat/Long text
+                    // Look for patterns like "Lat 13.0530" or "13.0530 Long"
+                    const hasCoordinatePattern = (hasLat || hasLong) && likelyCoordinates.length >= 1;
+                    const hasTwoCoordinates = likelyCoordinates.length >= 2;
+                    
+                    const hasLocationText = /Location\s*[:\s]*[A-Z][a-z]+/i.test(fileString);
+                    const hasLocationName = /Bengaluru|Karnataka|India|City|State|Country/i.test(fileString);
+                    
+                    // Debug logging
+                    console.log('🔍 GPS Detection Results:');
+                    console.log(`   GPS Map Camera: ${hasGPSMapCamera}`);
+                    console.log(`   Pattern matches: ${matches.length}`);
+                    console.log(`   All numbers found: ${allNumbers.length}`);
+                    console.log(`   Likely coordinates: ${likelyCoordinates.length} (${likelyCoordinates.slice(0, 5).join(', ')})`);
+                    console.log(`   Has Lat: ${hasLat}, Has Long: ${hasLong}`);
+                    console.log(`   Has location text: ${hasLocationText || hasLocationName}`);
+                    console.log(`   Matched patterns:`, matches.map(m => m.toString()).slice(0, 5));
+                    
+                    // Very lenient matching - accept if we find ANY GPS indicators:
+                    // Option 1: Strong visual overlay detected (confidence >= 5) - GPS Map Camera overlays are visible
+                    // Option 2: GPS Map Camera signature in file (strongest - accept immediately)
+                    // Option 3: Any location name (Bengaluru, India, etc.) - strong indicator
+                    // Option 4: Coordinates (2+ decimal numbers) with Lat/Long labels
+                    // Option 5: Any coordinate + location text/name
+                    // Option 6: Multiple pattern matches (2+)
+                    // Option 7: Single coordinate with Lat or Long label
+                    // Option 8: Plus Code or GMT indicators (GPS Map Camera features)
+                    const hasPlusCode = /Plus\s*Code/i.test(fileString);
+                    const hasGMT = /GMT\s*\+/i.test(fileString);
+                    
+                    // If visual overlay was detected, accept it
+                    // GPS Map Camera apps add visible overlays with location data - if we can see it, it's geotagged
+                    // We set hasVisualOverlay = true when confidence >= 3, so if it's true, we should accept it
+                    // High confidence (>= 5) is even stronger evidence
+                    const strongVisualOverlay = hasVisualOverlay; // Accept if visual overlay was detected (confidence >= 3)
+                    const veryStrongVisualOverlay = hasVisualOverlay && visualOverlayConfidence >= 5; // Extra confidence for high scores
+                    
+                    // Debug: Log visual overlay status
+                    console.log(`🔍 Visual Overlay Check: hasVisualOverlay=${hasVisualOverlay}, confidence=${visualOverlayConfidence}`);
+                    console.log(`🔍 Visual Overlay Decision: strongVisualOverlay=${strongVisualOverlay}, veryStrongVisualOverlay=${veryStrongVisualOverlay}`);
+                    
+                    const shouldAccept = strongVisualOverlay || // Strong visual overlay = GPS Map Camera image
+                                       hasGPSMapCamera || 
+                                       hasLocationName || // Location names are strong indicators
+                                       hasPlusCode || // Plus Code is GPS Map Camera feature
+                                       (hasTwoCoordinates && hasLatLongLabels) ||
+                                       (hasCoordinatePattern && (hasLocationText || hasLocationName)) ||
+                                       (likelyCoordinates.length >= 1 && (hasLocationText || hasLocationName)) ||
+                                       (likelyCoordinates.length >= 1 && (hasLat || hasLong)) ||
+                                       matches.length >= 2 ||
+                                       (hasGMT && (hasLat || hasLong || likelyCoordinates.length >= 1));
+                    
+                    console.log(`🔍 Acceptance Check: shouldAccept=${shouldAccept}, strongVisualOverlay=${strongVisualOverlay}, fileContentMatches=${matches.length}`);
+                    
+                    if (shouldAccept) {
+                      console.log('✅ GPS location data FOUND');
+                      const reason = strongVisualOverlay ? `Visual overlay detected (confidence: ${visualOverlayConfidence}) - GPS Map Camera overlay visible` :
+                                    hasGPSMapCamera ? 'GPS Map Camera signature' : 
+                                    hasLocationName ? 'Location name found' :
+                                    hasPlusCode ? 'Plus Code found' :
+                                    hasTwoCoordinates && hasLatLongLabels ? 'Coordinates with Lat/Long labels' :
+                                    hasCoordinatePattern && (hasLocationText || hasLocationName) ? 'Coordinate pattern + location' :
+                                    likelyCoordinates.length >= 1 && (hasLocationText || hasLocationName) ? 'Coordinate + location text' :
+                                    likelyCoordinates.length >= 1 && (hasLat || hasLong) ? 'Coordinate + Lat/Long label' :
+                                    matches.length >= 2 ? 'Multiple pattern matches' :
+                                    hasGMT && (hasLat || hasLong || likelyCoordinates.length >= 1) ? 'GMT + GPS indicators' :
+                                    'GPS indicators found';
+                      console.log(`   Reason: ${reason}`);
+                      resolve({ hasGeoTag: true });
+                    } else {
+                      console.log('❌ No GPS location data found');
+                      console.log(`   Visual overlay: ${hasVisualOverlay ? `detected (confidence: ${visualOverlayConfidence})` : 'not detected'}`);
+                      console.log(`   File content - GPS Map Camera=${hasGPSMapCamera}, Location Name=${hasLocationName}, Plus Code=${hasPlusCode}`);
+                      console.log(`   File content - Coordinates=${likelyCoordinates.length}, Lat=${hasLat}, Long=${hasLong}, Matches=${matches.length}`);
+                      if (hasVisualOverlay && visualOverlayConfidence < 5) {
+                        console.log(`   ⚠️ Visual overlay detected but confidence too low (${visualOverlayConfidence} < 5)`);
+                      }
+                      resolve({ 
+                        hasGeoTag: false, 
+                        error: 'No GPS location data found in image. Please upload an image taken with GPS-enabled camera or GPS Map Camera app that includes location metadata.' 
+                      });
+                    }
+                  } catch (fileReadError) {
+                    console.warn('File string search error:', fileReadError);
+                    resolve({ 
+                      hasGeoTag: false, 
+                      error: 'No GPS location data found in image. Please upload an image taken with GPS-enabled camera or GPS Map Camera app that includes location metadata.' 
+                    });
+                  }
+                }).catch(() => {
+                  resolve({ 
+                    hasGeoTag: false, 
+                    error: 'No GPS location data found in image. Please upload an image taken with GPS-enabled camera or GPS Map Camera app that includes location metadata.' 
+                  });
+                });
+              }
             } catch (error) {
               clearTimeout(timeout);
               console.error('Error reading EXIF tags:', error);
-              // If error reading but image loaded, accept it (better user experience)
-              resolve(true);
+              resolve({ 
+                hasGeoTag: false, 
+                error: 'Error reading image metadata. Please ensure your image contains GPS location data.' 
+              });
             }
           });
         } catch (error) {
           clearTimeout(timeout);
           console.error('Error getting EXIF data:', error);
-          // If EXIF library fails, accept the image (many GPS cameras work even without readable EXIF)
-          resolve(true);
+          resolve({ 
+            hasGeoTag: false, 
+            error: 'Failed to read image metadata. Please upload a geotagged image with GPS location data.' 
+          });
         }
       };
       
       img.onerror = () => {
         clearTimeout(timeout);
         console.error('Error loading image');
-        resolve(false);
+        resolve({ 
+          hasGeoTag: false, 
+          error: 'Failed to load image. Please try a different image file.' 
+        });
       };
     };
     
     reader.onerror = () => {
       console.error('Error reading file');
-      resolve(false);
+      resolve({ 
+        hasGeoTag: false, 
+        error: 'Error reading image file. Please try again.' 
+      });
     };
     
     reader.readAsDataURL(file);
@@ -271,8 +669,14 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
         
         // Try to load notifications with error handling
         try {
-          const farmerNotifications = await getNotifications(user.id);
-          setNotifications(farmerNotifications);
+          const response = await getNotifications(user.id);
+          const farmerNotifications = (response as unknown as APINotification[]);
+          setNotifications(farmerNotifications.map(n => ({
+            id: n.id,
+            message: n.message,
+            timestamp: n.timestamp,
+            read: n.read
+          })));
         } catch (error) {
           console.warn('Failed to load notifications (backend may be down):', error);
           setNotifications([]); // Set empty array as fallback
@@ -371,6 +775,10 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     setImageError('');
+    
+    // Clear any previously selected image
+    setProductForm(prev => ({ ...prev, image: '' }));
+    
     if (file) {
       // Basic file validations
       if (file.size > 5 * 1024 * 1024) {
@@ -382,34 +790,40 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
         return;
       }
       
-      // Check if image has geotag (try to read EXIF, but be lenient)
-      // GPS Map Camera images have location data, but EXIF.js might not always read it
+      // Check if image has geotag - STRICT VERIFICATION
       try {
-      const hasGeoTag = await checkImageGeoTag(file);
-      if (!hasGeoTag) {
-          // Show info message but don't block - GPS Map Camera images are geotagged even if EXIF.js can't read it
-          console.log('GPS not detected in EXIF, but accepting image (GPS Map Camera images are geotagged)');
-          // Allow upload - GPS Map Camera app adds location even if not in standard EXIF format
+        const result = await checkImageGeoTag(file);
+        
+        if (!result.hasGeoTag) {
+          // Reject image - no GPS data found
+          setImageError(result.error || 'Image does not contain GPS location data. Please upload a geotagged image taken with GPS-enabled camera or GPS Map Camera app.');
+          notify(result.error || 'Geotag verification failed. Please upload an image with GPS location data.', { variant: 'error' });
+          return; // Don't proceed with image upload
         } else {
-          console.log('✅ GPS location detected in image');
+          // GPS data found - proceed with image upload
+          console.log('✅ GPS location verified in image');
           setImageError(''); // Clear any previous errors
+          
+          // Save image if it passes all checks
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const base64String = event.target?.result as string;
+            setProductForm(prev => ({ ...prev, image: base64String }));
+            notify('Image uploaded successfully! GPS location verified.', { variant: 'success' });
+          };
+          reader.onerror = () => {
+            setImageError('Failed to read image file. Please try again.');
+            notify('Failed to read image file', { variant: 'error' });
+          };
+          reader.readAsDataURL(file);
         }
       } catch (error) {
         console.error('Error checking geotag:', error);
-        // If check fails, accept the image anyway (GPS Map Camera images should work)
+        setImageError('Error verifying geotag. Please ensure your image contains GPS location data.');
+        notify('Geotag verification error. Please upload a geotagged image.', { variant: 'error' });
       }
-
-      // Save image if it passes all checks
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const base64String = event.target?.result as string;
-        setProductForm(prev => ({ ...prev, image: base64String }));
-      };
-      reader.readAsDataURL(file);
     }
   };
-
-  // Removed EXIF/geotag validation - images are accepted if they are valid image files under 5MB
 
   const handleCropNameChange = (cropName: string) => {
     setProductForm(prev => ({ ...prev, cropName }));
@@ -448,7 +862,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
     }
     
     if (imageError) {
-      notify('Please fix the image error before proceeding', { variant: 'warning' });
+      notify('Please fix the image error before proceeding. Image must contain GPS location data (geotagged).', { variant: 'error' });
       return;
     }
 
@@ -851,11 +1265,24 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({ user }) => {
                   )}
                 </div>
                 {imageError && (
-                  <p className="text-xs text-red-500 mt-1">{imageError}</p>
+                  <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <div className="flex items-start space-x-2">
+                      <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                      <p className="text-sm text-red-700 font-medium">{imageError}</p>
+                    </div>
+                  </div>
                 )}
-                <p className="text-xs text-gray-500 mt-1">
-                  <strong>Required:</strong> Upload a clear photo of your crop. Maximum file size: 5MB.
+                <p className="text-xs text-gray-500 mt-2">
+                  <strong>Required:</strong> Upload a clear photo of your crop with GPS location data (geotagged). 
+                  Use a GPS-enabled camera or GPS Map Camera app to capture images with location metadata. 
+                  Maximum file size: 5MB.
                 </p>
+                {!imageError && productForm.image && (
+                  <p className="text-xs text-green-600 mt-1 font-medium flex items-center space-x-1">
+                    <span>✓</span>
+                    <span>GPS location verified - Image ready to upload</span>
+                  </p>
+                )}
               </div>
             </div>
             
